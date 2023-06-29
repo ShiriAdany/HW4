@@ -91,6 +91,7 @@ size_t totalBlocksBytes = 0;
 //}
 
 void* smalloc(size_t size){
+    printf("Hi\n");
     if (size == 0)
         return NULL;
     if (size > 100000000)
@@ -115,17 +116,17 @@ void* smalloc(size_t size){
     {
         void* temp = head;
         void* prev = nullptr;
-        bool allocated = false;
+        //bool allocated = false;
         while (temp)
         {
             MallocMetadata* metadata = (MallocMetadata*)temp;
-            if (metadata->size >= size + sizeof(MallocMetadata) && metadata->is_free)
+            if (metadata->size >= size && metadata->is_free)
             {
                 metadata->is_free = false;
                 numOfFreeBlocks--;
                 numOfFreeBytes-= metadata->size;
 //                allocated = true;
-                return metadata + sizeof(MallocMetadata);
+                return (void*)((unsigned long)metadata + sizeof(MallocMetadata));
             }
             else
             {

@@ -111,13 +111,13 @@ void* smalloc(size_t size){
                             exit(0xdeadbeef);
                         //remove from layer
                         arr[j] = arr[j]->next;
-                        arr[j]->prev = nullptr;
+                        if (arr[j])
+                            arr[j]->prev = nullptr;
 
                         //split to 2 blocks
                         void *addressOfBuddy = addressOfBig + metadata->size / 2;
                         MallocMetadata *newBlock = (MallocMetadata *) addressOfBuddy; //meta of the big
-                        if (newBlock->COOKIE != COOKIE)
-                            exit(0xdeadbeef);
+
                         metadata->size = metadata->size / 2;
                         newBlock->size = metadata->size;
                         arr[j - 1] = metadata;
@@ -132,6 +132,7 @@ void* smalloc(size_t size){
                         totalBlocksCount++;
                         numOfFreeBlocks++;
                         numOfFreeBytes -= sizeof(MallocMetadata);
+
                     }
                 }
             }
@@ -209,7 +210,8 @@ void sfree(void* p){
     while (buddyBlock->is_free)
     {
         size_t blockSize = buddyBlock->size;
-        int order = blockSize/128 - 1;
+//        printf("%zu is the block size\n",blockSize);
+        int order = log2(blockSize/128);
         if(buddyBlock->prev)
             buddyBlock->prev->next = buddyBlock->next;
         else
@@ -226,7 +228,7 @@ void sfree(void* p){
                 buddyBlock->is_free = true;
                 AddToArray(buddyBlock,order + 1);
                 metadata = buddyBlock; //buddyBlock is the merged block
-                void* buddyAddress = (void *)((unsigned long)metadataAddress ^ metadata->size);
+                buddyAddress = (void *)((unsigned long)metadataAddress ^ metadata->size);
                 buddyBlock = (MallocMetadata*) buddyAddress;
                 if (buddyBlock->COOKIE != COOKIE)
                     exit(0xdeadbeef);
@@ -242,6 +244,7 @@ void sfree(void* p){
                 if (buddyBlock->COOKIE != COOKIE)
                     exit(0xdeadbeef);
             }
+//            printf("order is %d\n",order);
             numOfFreeBlocks--;
             numOfFreeBytes += sizeof(MallocMetadata);
             totalBlocksCount--;
@@ -270,7 +273,7 @@ void* srealloc(void* oldp, size_t size){
     MallocMetadata* buddyBlock = (MallocMetadata*)(buddyAddress);
     if (buddyBlock->COOKIE != COOKIE)
         exit(0xdeadbeef);
-    int freeSpace = oldMeta->size;
+    size_t freeSpace = oldMeta->size;
     MallocMetadata* temp = oldMeta;
     size_t currentSize = oldMeta->size;
     while (buddyBlock->is_free)
@@ -345,7 +348,7 @@ void* srealloc(void* oldp, size_t size){
         //we assume that originalSize would be 128 and not 96 (if metadata size is 32)
         oldMeta->is_free = false;
         memmove(oldMeta + sizeof(MallocMetadata), oldp, oldMeta->size);
-        return oldMeta + sizeof(MallocMetadata);
+        return (void *)((unsigned long)oldMeta + sizeof(MallocMetadata));
     }
     else
     {
@@ -373,6 +376,8 @@ size_t _num_allocated_blocks(){
 }
 
 size_t _num_allocated_bytes(){
+    if (totalBlocksCount == 0)
+        return 0;
     return TOTAL_BLOCKS_SIZE - totalBlocksCount * sizeof(MallocMetadata) + totalBytesMMap;
 //    return totalBlocksBytes;
 }
