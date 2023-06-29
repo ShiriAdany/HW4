@@ -109,7 +109,7 @@ void* smalloc(size_t size){
         metadata->is_free = false;
         metadata->next = nullptr;
         metadata->prev = nullptr;
-        return head + sizeof(MallocMetadata);
+        return (void*)((unsigned long)head + sizeof(MallocMetadata));
     }
     else
     {
@@ -145,10 +145,10 @@ void* smalloc(size_t size){
         metadata->size = size;
         metadata->is_free = false;
         metadata->next = nullptr;
-        metadata->prev = prev;
+        metadata->prev = (MallocMetadata*)prev;
         ((MallocMetadata*)prev)->next = metadata;
 
-        return ret + sizeof(MallocMetadata);
+        return (void*)((unsigned long)ret + sizeof(MallocMetadata));
 //        }
 
     }
@@ -218,7 +218,7 @@ void* srealloc(void* oldp, size_t size){
     }
     memmove(newAlloc,oldp,oldMeta->size);
     sfree(oldp);
-    return newAlloc;
+    return newAlloc; //we assume numOfFreeBlocks etc are updated because of internal implementation of smalloc and sfree
 }
 
 size_t _num_free_blocks(){
