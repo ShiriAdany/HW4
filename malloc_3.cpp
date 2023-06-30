@@ -5,8 +5,10 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <math.h>
 
 typedef struct MallocMetadata {
+    unsigned int COOKIE;
     size_t size;
     bool is_free;
     MallocMetadata* next;
@@ -22,8 +24,9 @@ typedef struct MallocMetadata {
 //void *head = nullptr;
 size_t numOfFreeBlocks = 0 ;
 size_t numOfFreeBytes = 0;
-size_t totalBlocksCount = 0;
-size_t totalBlocksBytes = 0;
+size_t totalBlocksCount = 0; //number of free and used blocks
+size_t totalBytesMMap = 0;
+//size_t totalBlocksBytes = 0;
 
 const int MAX_ORDER = 10;
 const size_t TOTAL_BLOCKS_SIZE = 32 * 128 * 1024;
@@ -49,7 +52,7 @@ void _initiateBlocks() {
         return;
     allocAddress = (void*)((unsigned long)allocAddress + offset); //now it's aligned - one block
     void* temp = allocAddress;
-    void* prev;
+    MallocMetadata* prev;
     for(int i = 0; i < 32 ; i++)
     {
         MallocMetadata* metadata = (MallocMetadata*)temp;
@@ -69,26 +72,104 @@ void _initiateBlocks() {
         prev = (MallocMetadata*)temp;
         temp = (void*)((unsigned long)temp + metadata->size);
     }
+    numOfFreeBlocks = 32;
+    numOfFreeBytes = TOTAL_BLOCKS_SIZE - 32 * sizeof(MallocMetadata);
+    totalBlocksCount = 32;
+//    totalBlocksBytes = 0;
+}
+
+void AddToArray(MallocMetadata* smallAddress, int order)
+{
+    MallocMetadata* higherOrderBlock = (MallocMetadata*) arr[order];
+    if (higherOrderBlock && higherOrderBlock->COOKIE != COOKIE)
+        exit(0xdeadbeef);
+    MallocMetadata* previous = nullptr;
+//                void* higherOrderBlockAddress = arr[order+1]; //hopefully we dont need this
+    while (higherOrderBlock && higherOrderBlock < smallAddress)
+    {
+        previous = higherOrderBlock;
+        higherOrderBlock = higherOrderBlock->next;
+        if (higherOrderBlock && higherOrderBlock->COOKIE != COOKIE)
+            exit(0xdeadbeef);
+    }
+
+    if (!previous) //list is empty
+    {
+        arr[order] = smallAddress;
+        smallAddress->next = nullptr;
+        smallAddress->prev = nullptr;
+    }
+    else if (!higherOrderBlock) //we reached the end
+    {
+        previous->next = smallAddress;
+        smallAddress->prev = previous;
+        smallAddress->next = nullptr;
+    }
+    else //somewhere in the middle
+    {
+        previous->next = smallAddress;
+        smallAddress->prev = previous;
+        higherOrderBlock->prev = smallAddress;
+        smallAddress->next = higherOrderBlock;
+    }
+
 }
 
 
 void* smalloc(size_t size){
     //TODO check if need to first time allocate or return null for invalid sizes
-    if (size == 0)
-        return NULL;
-    if (size > 100000000)
-        return NULL;
-
     //todo what to do if size < 0 ??
     if (totalBlocksCount == 0) //initiate array
     {
         _initiateBlocks();
     }
+    if (size == 0)
+        return NULL;
+    if (size > 100000000)
+        return NULL;
+
+
+
+    if(size >= 128*1024){
+        //too big for sbrk, do mmap
+        size_t offset = 4096 - ((unsigned long)size + sizeof(MallocMetadata)) % 4096;
+        //printf("sizeee %lu\n", offset + size + sizeof (MallocMetadata));
+        MallocMetadata* ret = (MallocMetadata*)mmap(nullptr,(size + sizeof(MallocMetadata))+offset,PROT_READ | PROT_WRITE, MAP_ANONYMOUS| MAP_PRIVATE,-1, 0);
+        if(ret == (void*)-1)
+        {
+            perror("Error ");
+            printf("mmap fail\n");
+            return nullptr;
+        }
+        ret->size = size;
+        ret->is_free = false;
+        ret->next = nullptr;
+        ret->prev = nullptr;
+        ret->COOKIE = COOKIE;
+        totalBlocksCount++;
+        totalBytesMMap+=size;
+        return (void*)((unsigned long)ret + sizeof(MallocMetadata));
+
+//
+//        if (!mmapList)
+//        {
+//            mmapList = ret;
+//            mmapList->size = size;
+//            mmapList->next = nullptr;
+//            mmapList->prev = nullptr;
+//            mmapList->is_free = false;
+//        }
+//        else{
+//            mmapList->next = ret;
+//        }
+//        mapList->blockMeta = ret;
+//        mapList->blockMeta->size = size;
+//        mapList->next = nullptr;
+    }
 
     size_t sizeOfBlockInOrder = 1;
     for (int i = 0 ; i < MAX_ORDER + 1; i++ )
     {
-
         if (sizeOfBlockInOrder*128 >= size + sizeof(MallocMetadata))
         {
             //check if exist
@@ -115,7 +196,7 @@ void* smalloc(size_t size){
                             arr[j]->prev = nullptr;
 
                         //split to 2 blocks
-                        void *addressOfBuddy = addressOfBig + metadata->size / 2;
+                        void *addressOfBuddy = (void *)((unsigned long)addressOfBig + metadata->size / 2);
                         MallocMetadata *newBlock = (MallocMetadata *) addressOfBuddy; //meta of the big
 
                         metadata->size = metadata->size / 2;
@@ -127,6 +208,7 @@ void* smalloc(size_t size){
                         newBlock->prev = metadata;
                         newBlock->next = nullptr;
                         newBlock->is_free = true;
+                        newBlock->COOKIE = COOKIE;
                         j--;
 
                         totalBlocksCount++;
@@ -184,9 +266,11 @@ void sfree(void* p){
 
     if (metadata->size >= 128 * 1024)
     {
-        munmap(metadata,metadata->size + sizeof(MallocMetadata));
+        printf("big free\n");
         totalBlocksCount--;
         totalBytesMMap-= metadata->size;
+        munmap(metadata,metadata->size + sizeof(MallocMetadata));
+
         return;
     }
 
@@ -201,7 +285,7 @@ void sfree(void* p){
     if (!buddyBlock->is_free)
     {
         size_t blockSize = buddyBlock->size;
-        int order = blockSize/128 - 1;
+        int order = log2(blockSize)/128 - 1;
         metadata->is_free = true;
         AddToArray(metadata,order);
 
@@ -230,6 +314,9 @@ void sfree(void* p){
                 metadata = buddyBlock; //buddyBlock is the merged block
                 buddyAddress = (void *)((unsigned long)metadataAddress ^ metadata->size);
                 buddyBlock = (MallocMetadata*) buddyAddress;
+                numOfFreeBlocks--;
+                numOfFreeBytes += sizeof(MallocMetadata);
+                totalBlocksCount--;
                 if (buddyBlock->COOKIE != COOKIE)
                     exit(0xdeadbeef);
             }
@@ -241,13 +328,14 @@ void sfree(void* p){
                 AddToArray(metadata,order + 1);
                 buddyAddress = (void *)((unsigned long)metadataAddress ^ metadata->size);
                 buddyBlock = (MallocMetadata*) buddyAddress;
+                numOfFreeBlocks--;
+                numOfFreeBytes += sizeof(MallocMetadata);
+                totalBlocksCount--;
                 if (buddyBlock->COOKIE != COOKIE)
                     exit(0xdeadbeef);
             }
 //            printf("order is %d\n",order);
-            numOfFreeBlocks--;
-            numOfFreeBytes += sizeof(MallocMetadata);
-            totalBlocksCount--;
+
         }
         else
         {
@@ -259,14 +347,33 @@ void sfree(void* p){
 
 }
 
+
+
+
 void* srealloc(void* oldp, size_t size){
     if (oldp == NULL)
     {
         return smalloc(size);
     }
-    MallocMetadata* oldMeta = (MallocMetadata*)(oldp - sizeof(MallocMetadata));
+    MallocMetadata* oldMeta = (MallocMetadata*)((unsigned long)oldp - sizeof(MallocMetadata));
+
+    if (oldMeta->COOKIE != COOKIE)
+        exit(0xdeadbeef);
+
     if (oldMeta->size >= size)
         return oldp;
+
+    if(oldMeta->size >= 128*1024)
+    {
+        void* newAlloc = smalloc(size);
+        if (newAlloc == NULL)
+        {
+            return NULL;
+        }
+        memmove(newAlloc,oldp,oldMeta->size);
+        sfree(oldp);
+        return newAlloc;
+    }
 
     int originalSize = oldMeta->size;
     void* buddyAddress = (void *)((unsigned long)oldMeta ^ oldMeta->size);
@@ -276,7 +383,9 @@ void* srealloc(void* oldp, size_t size){
     size_t freeSpace = oldMeta->size;
     MallocMetadata* temp = oldMeta;
     size_t currentSize = oldMeta->size;
-    while (buddyBlock->is_free)
+    int order = currentSize / 128 - 1;
+
+    while (buddyBlock->is_free && order <= MAX_ORDER)
     {
         if (temp->COOKIE != COOKIE)
             exit(0xdeadbeef);
@@ -286,6 +395,7 @@ void* srealloc(void* oldp, size_t size){
         if (temp->COOKIE != COOKIE)
             exit(0xdeadbeef);
         currentSize *= 2;
+        order++;
         buddyBlock = (MallocMetadata *)((unsigned long)temp ^ temp->size);
         if (buddyBlock->COOKIE != COOKIE)
             exit(0xdeadbeef);
@@ -301,7 +411,7 @@ void* srealloc(void* oldp, size_t size){
 
         while (freeSpace < size) {
             size_t blockSize = buddyBlock->size;
-            int order = blockSize / 128 - 1;
+            order = blockSize / 128 - 1;
             if (buddyBlock->prev)
                 buddyBlock->prev->next = buddyBlock->next;
             else

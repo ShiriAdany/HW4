@@ -173,7 +173,7 @@ void sfree(void* p){
     while (temp)
     {
         MallocMetadata* metadata = (MallocMetadata*) temp;
-        if (p == temp + sizeof(metadata))
+        if (p == (void *)((unsigned long)temp + sizeof(MallocMetadata)))
         {
             if (metadata->is_free)
                 return;
@@ -208,7 +208,7 @@ void* srealloc(void* oldp, size_t size){
     {
         return smalloc(size);
     }
-    MallocMetadata* oldMeta = (MallocMetadata*)(oldp - sizeof(MallocMetadata));
+    MallocMetadata* oldMeta = (MallocMetadata*)((unsigned long)oldp - sizeof(MallocMetadata));
     if (oldMeta->size >= size)
         return oldp;
 
