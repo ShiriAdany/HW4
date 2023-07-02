@@ -181,7 +181,6 @@ void* smalloc(size_t size){
                 if (j == MAX_ORDER + 1) {
                     //TODO size is valid but block big enough not found
                 }
-
                 else
                 {
                     while (j > i)
@@ -216,6 +215,7 @@ void* smalloc(size_t size){
                         numOfFreeBytes -= sizeof(MallocMetadata);
 
                     }
+                    numOfFreeBytes += sizeof(MallocMetadata); /// ??????
                 }
             }
 
@@ -280,13 +280,14 @@ void sfree(void* p){
         exit(0xdeadbeef);
 
     numOfFreeBlocks++;
-    numOfFreeBytes += metadata->size - sizeof(MallocMetadata);
+    numOfFreeBytes += metadata->size;// - sizeof(MallocMetadata);
 
     if (!buddyBlock->is_free)
     {
         size_t blockSize = buddyBlock->size;
         int order = log2(blockSize)/128 - 1;
         metadata->is_free = true;
+        //numOfFreeBytes -= sizeof(MallocMetadata); ///????????
         AddToArray(metadata,order);
 
         return;
@@ -347,9 +348,6 @@ void sfree(void* p){
 
 }
 
-
-
-
 void* srealloc(void* oldp, size_t size){
     if (oldp == NULL)
     {
@@ -362,18 +360,6 @@ void* srealloc(void* oldp, size_t size){
 
     if (oldMeta->size >= size)
         return oldp;
-
-    if(oldMeta->size >= 128*1024)
-    {
-        void* newAlloc = smalloc(size);
-        if (newAlloc == NULL)
-        {
-            return NULL;
-        }
-        memmove(newAlloc,oldp,oldMeta->size);
-        sfree(oldp);
-        return newAlloc;
-    }
 
     int originalSize = oldMeta->size;
     void* buddyAddress = (void *)((unsigned long)oldMeta ^ oldMeta->size);
