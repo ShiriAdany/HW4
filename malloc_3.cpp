@@ -84,6 +84,7 @@ void AddToArray(MallocMetadata* smallAddress, int order)
     if (higherOrderBlock && higherOrderBlock->COOKIE != COOKIE)
         exit(0xdeadbeef);
     MallocMetadata* previous = nullptr;
+
 //                void* higherOrderBlockAddress = arr[order+1]; //hopefully we dont need this
     while (higherOrderBlock && higherOrderBlock < smallAddress)
     {
@@ -93,7 +94,17 @@ void AddToArray(MallocMetadata* smallAddress, int order)
             exit(0xdeadbeef);
     }
 
-    if (!previous) //list is empty
+
+
+
+    if (arr[order] && arr[order] > smallAddress ) //we need to add the new block first
+    {
+        arr[order]->prev = smallAddress;
+        smallAddress->next = arr[order];
+        smallAddress->prev = nullptr;
+        arr[order] = smallAddress;
+    }
+    else if (!previous)
     {
         arr[order] = smallAddress;
         smallAddress->next = nullptr;
@@ -128,49 +139,31 @@ void* smalloc(size_t size){
     if (size > 100000000)
         return NULL;
 
-
-
-    if(size >= 128*1024){
+    if(size > 128*1024 - sizeof(MallocMetadata)){
         printf("big malloc\n");
 
         //too big for sbrk, do mmap
-        size_t offset = 4096 - ((unsigned long)size + sizeof(MallocMetadata)) % 4096;
+        //size_t offset = 4096 - ((unsigned long)size + sizeof(MallocMetadata)) % 4096; //we added it to mmap, now seems like not needed
         //printf("sizeee %lu\n", offset + size + sizeof (MallocMetadata));
-        MallocMetadata* ret = (MallocMetadata*)mmap(nullptr,(size + sizeof(MallocMetadata))+offset,PROT_READ | PROT_WRITE, MAP_ANONYMOUS| MAP_PRIVATE,-1, 0);
+        MallocMetadata* ret = (MallocMetadata*)mmap(nullptr,(size + sizeof(MallocMetadata)),PROT_READ | PROT_WRITE, MAP_ANONYMOUS| MAP_PRIVATE,-1, 0);
         if(ret == (void*)-1)
         {
             perror("Error ");
             printf("mmap fail\n");
             return nullptr;
         }
-        ret->size = size;
+        ret->size = size  + sizeof(MallocMetadata);
         ret->is_free = false;
         ret->next = nullptr;
         ret->prev = nullptr;
         ret->COOKIE = COOKIE;
         totalBlocksCount++;
-        totalBytesMMap+=size + sizeof(MallocMetadata); ///adding sizeof fixes why???
+        totalBytesMMap+=ret->size; ///adding sizeof fixes why???
         return (void*)((unsigned long)ret + sizeof(MallocMetadata));
-
-//
-//        if (!mmapList)
-//        {
-//            mmapList = ret;
-//            mmapList->size = size;
-//            mmapList->next = nullptr;
-//            mmapList->prev = nullptr;
-//            mmapList->is_free = false;
-//        }
-//        else{
-//            mmapList->next = ret;
-//        }
-//        mapList->blockMeta = ret;
-//        mapList->blockMeta->size = size;
-//        mapList->next = nullptr;
     }
 
     size_t sizeOfBlockInOrder = 1;
-    for (int i = 0 ; i <= MAX_ORDER + 1; i++ )
+    for (int i = 0 ; i <= MAX_ORDER; i++ ) //was MAX_ORDER + 1
     {
         if (sizeOfBlockInOrder*128 >= size + sizeof(MallocMetadata))
         {
@@ -243,6 +236,7 @@ void* smalloc(size_t size){
             numOfFreeBytes -= ((MallocMetadata*)address)->size;
             numOfFreeBlocks--;
 
+            ((MallocMetadata*)address)->next = nullptr;
             return (void *)((unsigned long)address + sizeof(MallocMetadata));
         }
         sizeOfBlockInOrder *= 2;
@@ -277,9 +271,9 @@ void sfree(void* p){
     {
         printf("big free with %zu\n",metadata->size);
         totalBlocksCount--;
-        numOfFreeBytes += metadata->size - sizeof(MallocMetadata); /// ?????
+        //numOfFreeBytes += metadata->size - sizeof(MallocMetadata); /// ?????
         totalBytesMMap-= metadata->size;
-        munmap(metadata,metadata->size + sizeof(MallocMetadata));
+        munmap(metadata,metadata->size);
 
         return;
     }
@@ -295,7 +289,7 @@ void sfree(void* p){
     if (!buddyBlock->is_free)
     {
         size_t blockSize = buddyBlock->size;
-        int order = log2(blockSize)/128 - 1;
+        int order = log2(blockSize/128);
         metadata->is_free = true;
         numOfFreeBytes -= sizeof(MallocMetadata); ///????????
         AddToArray(metadata,order);
@@ -307,23 +301,28 @@ void sfree(void* p){
         size_t blockSize = buddyBlock->size;
 //        printf("%zu is the block size\n",blockSize);
         int order = log2(blockSize/128);
-        if(buddyBlock->prev)
-            buddyBlock->prev->next = buddyBlock->next;
-        else
-            arr[order] = buddyBlock->next;
+        if (order < MAX_ORDER) {
+            if (buddyBlock->prev)
+                buddyBlock->prev->next = buddyBlock->next;
+            else
+                arr[order] = buddyBlock->next;
 
-        if(buddyBlock->next)
-            buddyBlock->next->prev = buddyBlock->prev;
+            if (buddyBlock->next)
+                buddyBlock->next->prev = buddyBlock->prev;
 
+
+        }
         if(order < MAX_ORDER )
         {
+            MallocMetadata * oldNext;
             if (metadataAddress > buddyAddress) {
                 //merge into buddy
+                oldNext = buddyBlock->next;
                 buddyBlock->size *= 2;
                 buddyBlock->is_free = true;
                 AddToArray(buddyBlock,order + 1);
                 metadata = buddyBlock; //buddyBlock is the merged block
-                buddyAddress = (void *)((unsigned long)metadataAddress ^ metadata->size);
+                buddyAddress = (void *)((unsigned long)metadata ^ metadata->size);
                 buddyBlock = (MallocMetadata*) buddyAddress;
                 numOfFreeBlocks--;
                 numOfFreeBytes += sizeof(MallocMetadata);
@@ -334,16 +333,22 @@ void sfree(void* p){
             else
             {
                 //merge into meta
+                oldNext=metadata->next;
                 metadata->size *= 2;
                 metadata->is_free = true;
                 AddToArray(metadata,order + 1);
-                buddyAddress = (void *)((unsigned long)metadataAddress ^ metadata->size);
+                buddyAddress = (void *)((unsigned long)metadata ^ metadata->size);
                 buddyBlock = (MallocMetadata*) buddyAddress;
                 numOfFreeBlocks--;
                 numOfFreeBytes += sizeof(MallocMetadata);
                 totalBlocksCount--;
                 if (buddyBlock->COOKIE != COOKIE)
                     exit(0xdeadbeef);
+            }
+            if (arr[order] && metadata == arr[order]) {
+                arr[order] = oldNext;
+                if (arr[order])
+                    arr[order]->prev = nullptr;
             }
 //            printf("order is %d\n",order);
 
@@ -352,7 +357,7 @@ void sfree(void* p){
         {
             //can't unite
             numOfFreeBytes-= sizeof(MallocMetadata); /// but why ????
-            AddToArray(metadata,MAX_ORDER);
+            //AddToArray(metadata,MAX_ORDER);
             return;
         }
     }
@@ -366,6 +371,7 @@ void* srealloc(void* oldp, size_t size){
         return smalloc(size);
     }
     MallocMetadata* oldMeta = (MallocMetadata*)((unsigned long)oldp - sizeof(MallocMetadata));
+    size_t origSize = oldMeta->size;
 
     if (oldMeta->COOKIE != COOKIE)
         exit(0xdeadbeef);
@@ -381,7 +387,7 @@ void* srealloc(void* oldp, size_t size){
     size_t freeSpace = oldMeta->size;
     MallocMetadata* temp = oldMeta;
     size_t currentSize = oldMeta->size;
-    int order = currentSize / 128 - 1;
+    int order = log2(currentSize/128);
 
     while (buddyBlock->is_free && order <= MAX_ORDER)
     {
@@ -409,7 +415,7 @@ void* srealloc(void* oldp, size_t size){
 
         while (freeSpace < size) {
             size_t blockSize = buddyBlock->size;
-            order = blockSize / 128 - 1;
+            order = log2(blockSize/128);
             if (buddyBlock->prev)
                 buddyBlock->prev->next = buddyBlock->next;
             else
@@ -420,10 +426,12 @@ void* srealloc(void* oldp, size_t size){
 
             freeSpace += buddyBlock->size + sizeof(MallocMetadata);
             if (order < MAX_ORDER) {
+                MallocMetadata * oldNext;
                 if (oldMeta > buddyAddress) {
                     //merge into buddy
                     buddyBlock->size *= 2;
 //                    buddyBlock->is_free = false;
+                    oldNext = buddyBlock->next;
                     AddToArray(buddyBlock, order + 1);
                     oldMeta = buddyBlock; //buddyBlock is the merged block
                     buddyAddress = (void *)((unsigned long)oldMeta ^ oldMeta->size);
@@ -433,12 +441,19 @@ void* srealloc(void* oldp, size_t size){
                 } else {
                     //merge into oldMeta
                     oldMeta->size *= 2;
+                    oldNext=oldMeta->next;
+
 //                    oldMeta->is_free = false;
                     AddToArray(oldMeta, order + 1);
                     buddyAddress = (void*)((unsigned long)oldMeta ^ oldMeta->size); //TODO: NOTE maybe use 'xor'
                     buddyBlock = (MallocMetadata *) buddyAddress;
                     if (buddyBlock->COOKIE != COOKIE)
                         exit(0xdeadbeef);
+                }
+                if (arr[order] && oldMeta == arr[order]) {
+                    arr[order] = oldNext;
+                    if (arr[order])
+                        arr[order]->prev = nullptr;
                 }
                 numOfFreeBlocks--;
                 numOfFreeBytes += sizeof(MallocMetadata); //to make up for later ???
@@ -455,7 +470,7 @@ void* srealloc(void* oldp, size_t size){
         //original size is the size of the original block
         //we assume that originalSize would be 128 and not 96 (if metadata size is 32)
         oldMeta->is_free = false;
-        memmove(oldMeta + sizeof(MallocMetadata), oldp, oldMeta->size);
+        memmove(oldMeta + sizeof(MallocMetadata), oldp, origSize - sizeof(MallocMetadata));
         return (void *)((unsigned long)oldMeta + sizeof(MallocMetadata));
     }
     else
@@ -465,7 +480,7 @@ void* srealloc(void* oldp, size_t size){
         {
             return NULL;
         }
-        memmove(newAlloc,oldp,oldMeta->size);
+        memmove(newAlloc,oldp,oldMeta->size-sizeof(MallocMetadata));
         sfree(oldp);
         return newAlloc;
     }

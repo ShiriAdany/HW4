@@ -44,8 +44,8 @@ void verify_block_by_order(int order0free, int order0used, int order1free, int o
 
     if (__total_blocks==0) testing_allocated_bytes = 0;
     else testing_allocated_bytes = big_blocks_size+32 * MAX_ELEMENT_SIZE - (__total_blocks-big_blocks_count)*(_size_meta_data());
-    printf("%zu\n",_num_free_bytes());                                                                                                             \
-    printf("%lu\n",(__total_free_bytes_with_meta - __total_free_blocks*(_size_meta_data())));                                                                                                               \
+    printf("\n\n%zu\n",_num_allocated_blocks());                                                                                                             \
+    printf("%lu\n",__total_blocks);                                                                                                               \
     verify_blocks(__total_blocks, testing_allocated_bytes, __total_free_blocks,__total_free_bytes_with_meta - __total_free_blocks*(_size_meta_data()));\
     }
 
@@ -61,52 +61,38 @@ int main(int argc, char *const argv[])
     printf("\taloc bytes %zu\n",_num_allocated_bytes());
 //    return 0;
     assert(_num_meta_data_bytes() == _num_allocated_blocks() * _size_meta_data()); //this should always hold
-    std::vector<void*> allocations;
+    void* ptr1 = smalloc(40);
+    REQUIRE(ptr1 != nullptr);
+    verify_block_by_order(1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 31, 0, 0, 0);
 
-    // Allocate 64 blocks of size 128 * 2^9 - 64
-    for (int i = 0; i < 64; i++)
-    {
-        void* ptr = smalloc(128 * std::pow(2, 9) - 64);
-        REQUIRE(ptr != nullptr);
-        allocations.push_back(ptr);
-//        printf("%d\n",i);
-//        fflush(stdout);
-        verify_block_by_order(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, allocations.size()%2, allocations.size(), 32-(int)(i/2)-1, 0, 0, 0);
+    // Reallocate to a larger size
+    void* ptr2 = srealloc(ptr1, 128*pow(2,2) -64);
+    REQUIRE(ptr2 != nullptr);
+    verify_block_by_order(0,0,0,0,1,1,1,0,1,0,1,0,1,0,1,0,1,0,1,0,31,0,0,0);
+    int* newArr = static_cast<int*>(ptr2);
+
+    // Verify  elements are copied
+    for (int i = 0; i < 10; i++) {
+        newArr[i] = i + 1;
     }
 
-    REQUIRE(smalloc(40) == NULL);
-    // Free the allocated blocks
-    while (!allocations.empty())
-    {
-        void* ptr = allocations.back();
-        allocations.pop_back();
-        sfree(ptr);
-        verify_block_by_order(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, allocations.size() % 2, allocations.size(), 32 - (int)(allocations.size() / 2) -(allocations.size() % 2), 0, 0, 0);
-    }
-
-    // Verify that all blocks are merged into a single large block
-    verify_block_by_order(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0);
+    // Reallocate to a larger size
+    void* ptr3 = srealloc(ptr2, 100);
+    REQUIRE(ptr3 != nullptr);
+    REQUIRE(ptr2 == ptr3);
+    verify_block_by_order(0,0,0,0,1,1,1,0,1,0,1,0,1,0,1,0,1,0,1,0,31,0,0,0);
 
 
-    for (int i = 0; i < 64; i++)
-    {
-        void* ptr = smalloc(128 * std::pow(2, 9) - 64);
-        REQUIRE(ptr != nullptr);
-        allocations.push_back(ptr);
-        verify_block_by_order(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, allocations.size()%2, allocations.size(), 32-(int)(i/2)-1, 0, 0, 0);
+    void* ptr4 = srealloc(ptr3, 128*pow(2,8) -64);
+    verify_block_by_order(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,31,0,0,0);
+    int* newArr2 = static_cast<int*>(ptr4);
+    for (int i = 0; i < 10; i++) {
+        REQUIRE(newArr2[i] == i + 1);
     }
-    REQUIRE(smalloc(40) == NULL);
-    // Free the allocated blocks
-    while (!allocations.empty())
-    {
-        void* ptr = allocations.front();
-        allocations.erase(allocations.begin());
-        sfree(ptr);
-        verify_block_by_order(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, allocations.size() % 2, allocations.size(), 32 - (int)(allocations.size() / 2) -(allocations.size() % 2), 0, 0, 0);
-    }
+    sfree(ptr4);
     verify_block_by_order(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0);
     return 0;
-    void* ptr2, *ptr1;
+
     printf("after allocation\n\tfree bytes %zu\n",_num_free_bytes());
     printf("\tfree blocks %zu\n", _num_free_blocks());
     printf("\taloc blocks %zu\n",_num_allocated_blocks());
