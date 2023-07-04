@@ -9,19 +9,82 @@
 #include <iostream>
 #include <vector>
 
+#include <fstream>
+#include <unistd.h>
+
 #define REQUIRE(thing) assert(thing)
 
-#define MAX_ELEMENT_SIZE (128*1024)
+#define MAX_ALLOCATION_SIZE (1e8)
+#define MMAP_THRESHOLD (128 * 1024)
+#define DEFAULT_MMAP_THRESHOLD_MAX (4 * 1024 * 1024 * sizeof(long))
+#define SMALLOC_HUGE_PAGE_THRESHOLD (1000 * 1000 * 4)
+#define SCALLOC_HUGE_PAGE_THRESHOLD (1000 * 1000 * 2)
+
+static inline size_t aligned_size(size_t size)
+{
+    return (size % 8) ? (size & (size_t)(-8)) + 8 : size;
+}
 
 #define verify_blocks(allocated_blocks, allocated_bytes, free_blocks, free_bytes)                                      \
     do                                                                                                                 \
     {                                                                                                                  \
-        assert(_num_allocated_blocks() == allocated_blocks);                                                          \
-        assert(_num_allocated_bytes() == (allocated_bytes));                                              \
-        assert(_num_free_blocks() == free_blocks);                                                                    \
-        assert(_num_free_bytes() == (free_bytes));                                                                     \
-        assert(_num_meta_data_bytes() == (_size_meta_data() * allocated_blocks));                         \
+        printf("%d\n",_num_allocated_blocks());                                                                                                               \
+        REQUIRE(_num_allocated_blocks() == allocated_blocks);                                                          \
+        REQUIRE(_num_allocated_bytes() == aligned_size(allocated_bytes));                                              \
+        REQUIRE(_num_free_blocks() == free_blocks);                                                                    \
+        REQUIRE(_num_free_bytes() == aligned_size(free_bytes));                                                        \
+        REQUIRE(_num_meta_data_bytes() == aligned_size(_size_meta_data() * allocated_blocks));                         \
     } while (0)
+
+#define verify_size(base)                                                                                              \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        void *after = sbrk(0);                                                                                         \
+        REQUIRE(_num_allocated_bytes() + aligned_size(_size_meta_data() * _num_allocated_blocks()) ==                  \
+                (size_t)after - (size_t)base);                                                                         \
+    } while (0)
+
+#define verify_size_with_large_blocks(base, diff)                                                                      \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        void *after = sbrk(0);                                                                                         \
+        REQUIRE(diff == (size_t)after - (size_t)base);                                                                 \
+    } while (0)
+
+long long get_huge_pages_amount()
+{
+    std::ifstream meminfo("/proc/meminfo");
+    REQUIRE(meminfo.is_open());
+    std::string line;
+    long long total = -1;
+    long long free = -1;
+    while (getline(meminfo, line))
+    {
+        if (line.find("HugePages_Total") != std::string::npos)
+        {
+            std::string sub = line.substr(line.find(":") + 1);
+            total = std::atoll(sub.c_str());
+        }
+        if (line.find("HugePages_Free") != std::string::npos)
+        {
+            std::string sub = line.substr(line.find(":") + 1);
+            free = std::atoll(sub.c_str());
+        }
+    }
+    REQUIRE(total != -1);
+    REQUIRE(free != -1);
+    return total - free;
+}
+
+#define validate_huge_pages_amount(base, amount)                                                                       \
+    do                                                                                                                 \
+    {                                                                                                                  \
+        REQUIRE(base + amount == get_huge_pages_amount());                                                             \
+    } while (0)
+
+
+
+#define MAX_ELEMENT_SIZE (128*1024)
 
 void verify_block_by_order(int order0free, int order0used, int order1free, int order1used, \
                                 int order2free, int order2used,\
@@ -61,91 +124,24 @@ int main(int argc, char *const argv[])
     printf("\taloc bytes %zu\n",_num_allocated_bytes());
 //    return 0;
     assert(_num_meta_data_bytes() == _num_allocated_blocks() * _size_meta_data()); //this should always hold
-    void* ptr1 = smalloc(40);
-    REQUIRE(ptr1 != nullptr);
-    verify_block_by_order(1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 31, 0, 0, 0);
+    verify_blocks(0, 0, 0, 0);
+    void *base = sbrk(0);
+    char *a = (char *)smalloc(MMAP_THRESHOLD + 8);
+    REQUIRE(a != nullptr);
+    verify_blocks(1, MMAP_THRESHOLD + 8, 0, 0);
+    verify_size_with_large_blocks(base, 0);
 
-    // Reallocate to a larger size
-    void* ptr2 = srealloc(ptr1, 128*pow(2,2) -64);
-    REQUIRE(ptr2 != nullptr);
-    verify_block_by_order(0,0,0,0,1,1,1,0,1,0,1,0,1,0,1,0,1,0,1,0,31,0,0,0);
-    int* newArr = static_cast<int*>(ptr2);
+    sfree(a);
+    verify_blocks(0, 0, 0, 0);
+    verify_size(base);
 
-    // Verify  elements are copied
-    for (int i = 0; i < 10; i++) {
-        newArr[i] = i + 1;
-    }
+    char *b = (char *)smalloc(MMAP_THRESHOLD);
+    REQUIRE(b != nullptr);
+    verify_blocks(1, MMAP_THRESHOLD, 0, 0);
+    verify_size(base);
 
-    // Reallocate to a larger size
-    void* ptr3 = srealloc(ptr2, 100);
-    REQUIRE(ptr3 != nullptr);
-    REQUIRE(ptr2 == ptr3);
-    verify_block_by_order(0,0,0,0,1,1,1,0,1,0,1,0,1,0,1,0,1,0,1,0,31,0,0,0);
-
-
-    void* ptr4 = srealloc(ptr3, 128*pow(2,8) -64);
-    verify_block_by_order(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,1,0,31,0,0,0);
-    int* newArr2 = static_cast<int*>(ptr4);
-    for (int i = 0; i < 10; i++) {
-        REQUIRE(newArr2[i] == i + 1);
-    }
-    sfree(ptr4);
-    verify_block_by_order(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 0, 0, 0);
-    return 0;
-
-    printf("after allocation\n\tfree bytes %zu\n",_num_free_bytes());
-    printf("\tfree blocks %zu\n", _num_free_blocks());
-    printf("\taloc blocks %zu\n",_num_allocated_blocks());
-    printf("\taloc bytes %zu\n",_num_allocated_bytes());
-    printf("----------\n");
-
-    ptr1 = srealloc(ptr1,200);
-
-    printf("after realloc\n\tfree bytes %zu\n",_num_free_bytes());
-    printf("\tfree blocks %zu\n", _num_free_blocks());
-    printf("\taloc blocks %zu\n",_num_allocated_blocks());
-    printf("\taloc bytes %zu\n",_num_allocated_bytes());
-    printf("----------\n");
-
-//    return 1;
-    sfree(ptr1);
-    printf("after free\n\tfree bytes %zu\n",_num_free_bytes());
-    printf("\tfree blocks %zu\n", _num_free_blocks());
-    printf("\taloc blocks %zu\n",_num_allocated_blocks());
-    printf("\taloc bytes %zu\n",_num_allocated_bytes());
-    // Reallocate to a larger size
-
-    ptr2 = srealloc(ptr1, 20);
-    printf("freeeee bytes after merge %zu\n",_num_free_bytes());
-
-    sfree(ptr2);
-    printf("freeeee bytes after merge %zu\n",_num_free_bytes());
-
-
-
-
-    // Allocate another small block
-//    void *ptr3 = smalloc(50);
-//    REQUIRE(ptr3 != nullptr);
-//    verify_block_by_order(0,2,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,31,0,1,MAX_ELEMENT_SIZE+100);
-//
-//    // Free the first small block
-//    sfree(ptr1);
-//    verify_block_by_order(1,1,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,31,0,1,MAX_ELEMENT_SIZE+100);
-//
-//
-//    // Allocate another small block
-//    void *ptr4 = smalloc(40);
-//    REQUIRE(ptr4 != nullptr);
-//    verify_block_by_order(0,2,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,31,0,1,MAX_ELEMENT_SIZE+100);
-//
-//    // Free all blocks
-//    sfree(ptr3);
-//    sfree(ptr4);
-//    verify_block_by_order(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,32,0,1,MAX_ELEMENT_SIZE+100);
-//    sfree(ptr1); //free again
-//    sfree(ptr2);
-//    verify_block_by_order(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,32,0,0,0);
-
+    sfree(b);
+    verify_blocks(1, MMAP_THRESHOLD, 1, MMAP_THRESHOLD);
+    verify_size(base);
     return 0;
 }
