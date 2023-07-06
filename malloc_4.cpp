@@ -20,7 +20,7 @@ size_t numOfFreeBlocks = 0 ;
 size_t numOfFreeBytes = 0;
 size_t totalBlocksCount = 0; //number of free and used blocks
 size_t totalBytesMMap = 0;
-//size_t totalBlocksBytes = 0;
+bool useHugePage = true;
 
 const int MAX_ORDER = 10;
 const size_t TOTAL_BLOCKS_SIZE = 32 * 128 * 1024;
@@ -130,7 +130,7 @@ void* smalloc(size_t size){
     if (size > 100000000)
         return NULL;
 
-    if (size >= 4000000)
+    if (size >= 4000000 && useHugePage)
     {
         MallocMetadata* ret = (MallocMetadata*)mmap(nullptr,(size + sizeof(MallocMetadata)),PROT_READ | PROT_WRITE, MAP_HUGETLB | MAP_ANONYMOUS| MAP_PRIVATE,-1, 0);
         if(ret == (void*)-1)
@@ -148,6 +148,7 @@ void* smalloc(size_t size){
         totalBytesMMap+=ret->size; ///adding sizeof fixes why???
         return (void*)((unsigned long)ret + sizeof(MallocMetadata));
     }
+    useHugePage = true;
     if(size > 128*1024 - sizeof(MallocMetadata)){
         printf("big malloc\n");
 
@@ -414,11 +415,14 @@ void* srealloc(void* oldp, size_t size){
 
     if(oldMeta->size >= 128*1024)
     {
+        useHugePage = false;
         void* newAlloc = smalloc(size);
         if (newAlloc == NULL)
         {
+            useHugePage = true;
             return NULL;
         }
+
         memmove(newAlloc,oldp,oldMeta->size);
         sfree(oldp);
         return newAlloc;
@@ -520,9 +524,11 @@ void* srealloc(void* oldp, size_t size){
     }
     else
     {
+        useHugePage = false;
         void* newAlloc = smalloc(size);
         if (newAlloc == NULL)
         {
+            useHugePage = true;
             return NULL;
         }
         memmove(newAlloc,oldp,oldMeta->size-sizeof(MallocMetadata));
